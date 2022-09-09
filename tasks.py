@@ -90,7 +90,7 @@ def test_coverage(c):
 
     c.run("coverage erase")
     c.run("coverage run --source src -m pytest tests " + " ".join(args))
-    os.chdir('src')
+    os.chdir("src")
     datafile = "--data-file=../.coverage"
     c.run(f"coverage combine {datafile}")
     c.run(f"coverage report {datafile}")

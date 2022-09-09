@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 import shlex
 import subprocess
@@ -6,12 +7,14 @@ import time
 from random import randrange
 from socket import create_connection
 
+import flask
 import pytest
 import requests
-from xprocess import ProcessStarter
 
 import magicproxy
+from magicproxy import async_proxy, proxy
 from magicproxy.config import load_config
+from multiprocessing import Process
 
 API_PORT = randrange(50000, 55000)
 API_HOST = "localhost"
@@ -53,35 +56,35 @@ def wait_for_port(host: str, port: int, timeout: float = 5.0):
 
 
 @pytest.fixture(scope="module")
-def api_integration(xprocess):
-    class ApiStarter(ProcessStarter):
-        args = [
-            sys.executable,
-            os.path.join(os.path.dirname(__file__), "app_integration_test.py"),
-            "localhost",
-            API_PORT,
-        ]
+def api_integration():
+    app = flask.Flask("api")
 
-        def startup_check(self):
-            try:
-                create_connection((API_HOST, API_PORT), timeout=1)
-                return True
-            except TimeoutError:
-                return False
+    @app.route("/", methods=["GET"])
+    def route():
+        authorization_header = flask.request.headers.get("authorization")
 
-        pattern = rf"Running on {API_ROOT}"
+        if authorization_header:
+            if authorization_header.startswith("Bearer "):
+                if authorization_header[len("Bearer "):] == "fake_token":
+                    return "authorized by API", 200
 
-    xprocess.ensure("api", ApiStarter)
+        return "not authorized by API", 401
+
+    def api_target():
+        app.run(host=API_HOST, port=API_PORT)
+
+    api_process = Process(target=api_target)
+    api_process.start()
+    wait_for_port(API_HOST, API_PORT, 10)
     yield
-    print(open(xprocess.getinfo("api").logpath, 'r').read())
-    xprocess.getinfo("api").terminate()
+    api_process.terminate()
+    api_process.join()
 
 
 @pytest.fixture(scope="module")
-def integration(api_integration, xprocess, request):
+def integration(api_integration, request):
     run_async = request.param
     run_args = [sys.executable]
-    rcfile = None
     if "COVERAGE_RUN" in os.environ:
         root_dir = os.path.join(os.path.dirname(__file__), "..")
         rcfile = os.path.join(root_dir, ".coveragerc")
@@ -101,55 +104,35 @@ def integration(api_integration, xprocess, request):
             ]
         )
 
-    run_args.extend(
-        [
-            "-m",
-            "magicproxy",
-            "--host",
-            "localhost",
-            "--port",
-            PROXY_PORT,
-        ]
-    )
-    if run_async:
-        run_args.append("--async")
-    print(" ".join(str(e) for e in run_args))
-    run_env = {
-        "API_ROOT": API_ROOT,
-        "PYTHONUNBUFFERED": "1",
-        "PUBLIC_ACCESS": PROXY_ROOT,
-        "FLASK_ENV": "development",
-        "FLASK_DEBUG": "1",
-        "PUBLIC_KEY_LOCATION": os.path.abspath(config.public_key_location),
-        "PRIVATE_KEY_LOCATION": os.path.abspath(config.private_key_location),
-        "PUBLIC_CERTIFICATE_LOCATION": os.path.abspath(config.public_certificate_location),
-    }
-    if "COVERAGE_RUN" in os.environ:
-        run_env["COVERAGE_PROCESS_START"] = rcfile
+    def proxy_target():
+        os.environ.update({
+            "API_ROOT": API_ROOT,
+            "PYTHONUNBUFFERED": "1",
+            "PUBLIC_ACCESS": PROXY_ROOT,
+            "PUBLIC_KEY_LOCATION": os.path.abspath(config.public_key_location),
+            "PRIVATE_KEY_LOCATION": os.path.abspath(config.private_key_location),
+            "PUBLIC_CERTIFICATE_LOCATION": os.path.abspath(
+                config.public_certificate_location
+            ),
+        })
+        module = async_proxy if run_async else proxy
+        module.run_app(host=PROXY_HOST, port=PROXY_PORT)
 
-    class ProxyStarter(ProcessStarter):
-        args = run_args
-        env = run_env
-        timeout = 15
-
-        def startup_check(self):
-            try:
-                create_connection((PROXY_HOST, PROXY_PORT), timeout=1)
-                return True
-            except TimeoutError:
-                return False
-
-        pattern = rf"Running on {PROXY_ROOT}"
-
-    xprocess.ensure("proxy", ProxyStarter)
+    proxy_process = multiprocessing.Process(target=proxy_target)
+    proxy_process.start()
+    wait_for_port(PROXY_HOST, PROXY_PORT, 10)
     yield
-    print(open(xprocess.getinfo("proxy").logpath, 'r').read())
-    xprocess.getinfo("proxy").terminate()
+    proxy_process.terminate()
+    proxy_process.join()
+
+
+async_or_not = (False, )
+async_or_not_ids = ["run_async" if r else "sync" for r in async_or_not]
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "integration", [True, False], ids=["async", "sync"], indirect=True
+    "integration", async_or_not, ids=async_or_not_ids, indirect=True
 )
 def test_api_get___magictoken(integration):
     response = requests.get(f"{PROXY_ROOT}/__magictoken")
@@ -162,7 +145,7 @@ def test_api_get___magictoken(integration):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "integration", [True, False], ids=["async", "sync"], indirect=True
+    "integration", async_or_not, ids=async_or_not_ids, indirect=True
 )
 def test_extra_keys(integration):
     response = requests.post(
@@ -182,7 +165,7 @@ def test_extra_keys(integration):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "integration", [True, False], ids=["async", "sync"], indirect=True
+    "integration", async_or_not, ids=async_or_not_ids, indirect=True
 )
 def test_api_authorized(integration):
     response = requests.post(
@@ -205,7 +188,7 @@ def test_api_authorized(integration):
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "integration", [True, False], ids=["async", "sync"], indirect=True
+    "integration", async_or_not, ids=async_or_not_ids, indirect=True
 )
 def test_api_unauthorized(integration):
     response = requests.post(

@@ -2,6 +2,7 @@ import dataclasses
 import json
 import logging
 import os
+import pathlib
 from collections.abc import Mapping
 from typing import Union
 
@@ -22,11 +23,13 @@ DEFAULT_PUBLIC_ACCESS = "http://localhost:5000"
 @dataclasses.dataclass
 class Config:
     api_root: str = DEFAULT_API_ROOT
-    private_key_location: str = DEFAULT_PRIVATE_KEY_LOCATION
-    public_key_location: str = DEFAULT_PUBLIC_KEY_LOCATION
-    public_certificate_location: str = DEFAULT_PUBLIC_CERTIFICATE_LOCATION
+    private_key_location: Union[str, pathlib.Path] = DEFAULT_PRIVATE_KEY_LOCATION
+    public_key_location: Union[str, pathlib.Path] = DEFAULT_PUBLIC_KEY_LOCATION
+    public_certificate_location: Union[
+        str, pathlib.Path
+    ] = DEFAULT_PUBLIC_CERTIFICATE_LOCATION
     public_access: str = DEFAULT_PUBLIC_ACCESS
-    plugins_location: str = None
+    plugins_location: Union[str, pathlib.Path] = None
     scopes: dict = dataclasses.field(default_factory=lambda: {})
     keys: Keys = None
 
